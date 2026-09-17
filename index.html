@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>三国志 · 汉末风云（Three.js 战棋）</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ===================== 开场 ===================== -->
+<div id="boot" class="overlay show">
+  <div class="boot-box">
+    <div class="boot-seal">漢</div>
+    <h1>三國志 · 漢末風雲</h1>
+    <p class="boot-sub">建安风骨 · 沙盘战棋</p>
+    <div id="bootProgress" class="boot-progress"><i></i></div>
+    <div id="bootStatus" class="boot-status">正在展开舆图……</div>
+    <div class="boot-tip">操作：左键拖动平移 · Shift/中键拖动旋转 · 滚轮缩放 · 点击城池/部队查看 · 空格结束回合</div>
+  </div>
+</div>
+
+<!-- ===================== 主界面 ===================== -->
+<div id="app" class="hidden">
+  <canvas id="mapCanvas"></canvas>
+  <canvas id="battleCanvas" class="hidden"></canvas>
+
+  <!-- 顶栏 -->
+  <header id="topbar">
+    <div class="tb-left">
+      <div id="factionBadge" class="faction-badge">
+        <span class="fb-flag"></span>
+        <span class="fb-name">—</span>
+      </div>
+      <div id="dateBox" class="date-box">—</div>
+      <div class="res-group" id="resGroup">
+        <span class="res res-gold" title="金钱"><i>金</i><b id="resGold">0</b></span>
+        <span class="res res-food" title="兵粮"><i>粮</i><b id="resFood">0</b></span>
+        <span class="res res-troop" title="总兵力"><i>兵</i><b id="resTroops">0</b></span>
+        <span class="res res-city" title="城池"><i>城</i><b id="resCities">0</b></span>
+        <span class="res res-gen" title="武将"><i>将</i><b id="resGenerals">0</b></span>
+      </div>
+    </div>
+    <div class="tb-right">
+      <button class="btn btn-ghost" id="btnView" title="重新取景，显示整幅地图">全图</button>
+      <button class="btn btn-ghost" id="btnRoster">武将</button>
+      <button class="btn btn-ghost" id="btnPowers">势力</button>
+      <button class="btn btn-ghost" id="btnLog">战报</button>
+      <button class="btn btn-ghost" id="btnSave">存档</button>
+      <button class="btn btn-ghost" id="btnLoad">读档</button>
+      <button class="btn btn-ghost" id="btnHelp">帮助</button>
+      <button class="btn btn-primary" id="btnEndTurn">结束回合 <kbd>空格</kbd></button>
+    </div>
+  </header>
+
+  <!-- 左：势力列表 -->
+  <aside id="leftPanel" class="panel">
+    <div class="panel-head">天下势力</div>
+    <div id="powerList" class="panel-body"></div>
+  </aside>
+
+  <!-- 右：城池详情 -->
+  <aside id="rightPanel" class="panel">
+    <div id="cityPanel" class="city-panel">
+      <div class="city-title">
+        <span id="cityName">—</span>
+        <span id="cityKind" class="tag">—</span>
+      </div>
+      <div id="cityOwner" class="city-owner">—</div>
+      <div id="cityStats" class="city-stats"></div>
+      <div id="cityGenerals" class="city-generals"></div>
+      <div id="cityActions" class="city-actions"></div>
+    </div>
+  </aside>
+
+  <!-- 底部提示 -->
+  <div id="hintBar" class="hint-bar"></div>
+
+  <!-- 回合结算飘字 -->
+  <div id="toastLayer" class="toast-layer"></div>
+
+  <!-- 大地图选中提示 -->
+  <div id="mapTip" class="map-tip hidden"></div>
+</div>
+
+<!-- ===================== 战斗界面 ===================== -->
+<div id="battleUI" class="hidden">
+  <div id="battleTop">
+    <div class="bt-side">
+      <div class="bt-label">攻方</div>
+      <div id="btAtkName" class="bt-name">—</div>
+      <div id="btAtkTroops" class="bt-troops">—</div>
+    </div>
+    <div class="bt-mid">
+      <div id="btTurn" class="bt-turn">第 1 回合</div>
+      <div id="btSideNow" class="bt-sidenow">攻方行动</div>
+      <div id="btWeather" class="bt-weather">—</div>
+    </div>
+    <div class="bt-side right">
+      <div class="bt-label">守方</div>
+      <div id="btDefName" class="bt-name">—</div>
+      <div id="btDefTroops" class="bt-troops">—</div>
+    </div>
+  </div>
+
+  <div id="battleLog" class="battle-log"></div>
+  <div id="unitPanel" class="unit-panel hidden"></div>
+  <div id="battleOrderBar" class="battle-order-bar">
+    <button class="btn btn-sm" id="btWait">待机</button>
+    <button class="btn btn-sm" id="btDefend">防御</button>
+    <button class="btn btn-sm btn-primary" id="btSpecial">战法</button>
+    <button class="btn btn-sm" id="btAuto">自动</button>
+    <button class="btn btn-sm" id="btEndSide">结束本方 <kbd>空格</kbd></button>
+  </div>
+  <div id="battleResult" class="battle-result hidden"></div>
+</div>
+
+<!-- ===================== 通用弹窗 ===================== -->
+<div id="modal" class="overlay hidden">
+  <div class="modal-box">
+    <div class="modal-head"><span id="modalTitle">标题</span><button id="modalClose" class="modal-close">✕</button></div>
+    <div id="modalBody" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="tooltip" class="tooltip hidden"></div>
+
+<!-- ===================== 引擎与数据 ===================== -->
+<script src="vendor/three.min.js"></script>
+<script src="js/mapdata.js"></script>
+<script src="js/data_sites.js"></script>
+<script src="js/data_factions.js"></script>
+<script src="js/data_generals.js"></script>
+<script src="js/data_portraits.js"></script>
+<script src="js/portrait.js"></script>
+<script src="js/portraits.js"></script>
+<script src="js/core.js"></script>
+<script src="js/slice.js"></script>
+<script src="js/battle.js"></script>
+<script src="js/save.js"></script>
+<script src="js/map3d.js"></script>
+<script src="js/battle3d.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

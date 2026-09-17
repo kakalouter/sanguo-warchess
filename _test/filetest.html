@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>file 测试</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#111}
+#fr{position:fixed;left:0;top:0;width:100%;height:100%;border:0}
+#log{position:fixed;left:0;bottom:0;width:100%;max-height:52%;z-index:99999;background:rgba(8,6,4,.93);color:#c8d8e8;
+font:12.5px/1.65 Consolas,"Microsoft YaHei",monospace;padding:10px 14px;overflow:auto;white-space:pre-wrap}
+.ok{color:#7ad0a8}.err{color:#ff7a5a}.warn{color:#e8c05a}</style></head>
+<body>
+<iframe id="fr" src="../index.html"></iframe>
+<div id="log">file:// 测试启动…</div>
+<script>
+const L=[];const out=document.getElementById('log');
+const say=(s,c)=>{L.push(c?'<span class="'+c+'">'+s+'</span>':s);out.innerHTML=L.join('\n');out.scrollTop=out.scrollHeight;};
+const ok=s=>say('✔ '+s,'ok'),bad=s=>say('✘ '+s,'err'),warn=s=>say('! '+s,'warn');
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const T0=Date.now();
+(async()=>{
+  try{
+    say('协议 '+location.protocol+'  URL '+location.pathname.split('/').slice(-2).join('/'));
+    const W=fr.contentWindow;
+    const errs=[];
+    W.addEventListener('error',e=>errs.push(e.message+' @'+(e.filename||'').split(/[\\/]/).pop()+':'+e.lineno));
+    W.addEventListener('unhandledrejection',e=>errs.push('promise: '+(e.reason&&(e.reason.message||e.reason))));
+    await new Promise(r=>{ if(fr.contentDocument.readyState==='complete') r(); else fr.onload=r; });
+    await wait(3500);
+    const D=fr.contentDocument;
+    const need=['THREE','SANGUO_MAP','GameCore','Battle','SaveSys','MapView','BattleView','Portraits','Slice'];
+    const miss=need.filter(n=>!W[n]);
+    miss.length?bad('模块缺失: '+miss.join(',')):ok('全部 '+need.length+' 个模块就绪');
+    const cards=D.querySelectorAll('#startCards .card');
+    cards.length?ok('势力卡片 '+cards.length+' 张'):bad('势力卡片未渲染');
+    const c=[...cards].find(x=>x.dataset.fid==='caocao');
+    if(c){ c.click(); await wait(6500); }
+    !D.getElementById('app').classList.contains('hidden')?ok('主界面已显示'):bad('主界面隐藏');
+    const cv=D.getElementById('mapCanvas');
+    say('canvas '+cv.width+'x'+cv.height);
+    const h1=W.MapView.terrainHeightAt(104.07,30.66);
+    h1>5?ok('内嵌高程 PNG 解码成功（成都 '+h1.toFixed(2)+'）'):bad('高程解码失败 h='+h1);
+    await wait(2500);
+    const sc=document.createElement('canvas');sc.width=520;sc.height=390;
+    sc.getContext('2d').drawImage(cv,0,0,520,390);
+    const dd=sc.getContext('2d').getImageData(0,0,520,390).data;
+    let nb=0;for(let i=0;i<dd.length;i+=4)if(dd[i]+dd[i+1]+dd[i+2]>30)nb++;
+    nb>520*390*0.5?ok('地图渲染正常（非黑 '+(nb/(520*390)*100).toFixed(1)+'%）'):bad('地图几乎全黑 '+(nb/(520*390)*100).toFixed(1)+'%');
+    const img=await W.Portraits.get('关羽');
+    img?ok('真实武将头像加载成功 '+img.width+'x'+img.height):bad('头像加载失败');
+    const cc=document.createElement('canvas');cc.width=96;cc.height=96;
+    await W.Portraits.paint(cc,W.GameCore.S.generals[Object.keys(W.GameCore.S.generals)[0]],{size:96});
+    const pd=cc.getContext('2d').getImageData(0,0,96,96).data;
+    let nz=0;for(let i=0;i<pd.length;i+=4)if(pd[i]+pd[i+1]+pd[i+2]>40)nz++;
+    nz>96*96*0.5?ok('头像绘制正常（非空 '+(nz/(96*96)*100).toFixed(0)+'%）'):warn('头像偏空 '+(nz/(96*96)*100).toFixed(0)+'%');
+    const before=D.getElementById('dateBox').textContent;
+    D.getElementById('btnEndTurn').click();
+    await wait(5000);
+    const after=D.getElementById('dateBox').textContent;
+    before!==after?ok('回合推进 '+before+' → '+after):warn('回合未推进');
+    const ser=W.SaveSys.serialize();
+    ok('存档序列化 '+(JSON.stringify(ser).length/1024).toFixed(0)+' KB');
+    say('  '+W.SaveSys.saveLocal(0).msg);
+    errs.length?errs.forEach(e=>bad(e)):ok('file:// 下无 JS 错误');
+    say('');
+    say((errs.length?'<span class="err">FAILED</span>':'<span class="ok">ALL PASS</span>')+'   耗时 '+((Date.now()-T0)/1000).toFixed(1)+'s');
+    document.title = errs.length ? ('FILETEST-FAIL-'+errs.length) : 'FILETEST-PASS';
+  }catch(e){ bad('测试异常: '+e.message); say(String(e.stack||'').slice(0,400)); document.title='FILETEST-ERROR'; }
+  window.__DONE=true;
+})();
+</script></body></html>

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>PENDING</title>
+<link rel="stylesheet" href="../css/style.css">
+<style>#m{position:fixed;inset:0;width:100%;height:100%}</style></head>
+<body>
+<canvas id="mapCanvas"></canvas><canvas id="battleCanvas" class="hidden"></canvas>
+<div id="factionBadge"><span class="fb-flag"></span><span class="fb-name"></span></div><div id="dateBox"></div>
+<span id="resGold"></span><span id="resFood"></span><span id="resTroops"></span><span id="resCities"></span><span id="resGenerals"></span>
+<div id="powerList"></div><span id="cityName"></span><span id="cityKind"></span><div id="cityOwner"></div>
+<div id="cityStats"></div><div id="cityGenerals"></div><div id="cityActions"></div><div id="toastLayer"></div><div id="hintBar"></div>
+<div id="battleUI" class="hidden"><div id="btAtkName"></div><div id="btDefName"></div><div id="btAtkTroops"></div><div id="btDefTroops"></div>
+<div id="btTurn"></div><div id="btSideNow"></div><div id="btWeather"></div><div id="battleLog"></div><div id="unitPanel"></div>
+<button id="btWait"></button><button id="btDefend"></button><button id="btSpecial"></button><button id="btAuto"></button><button id="btEndSide"></button>
+<div id="battleResult" class="hidden"></div></div>
+<div id="modal" class="hidden"><span id="modalTitle"></span><button id="modalClose"></button><div id="modalBody"></div></div>
+<div id="tooltip" class="hidden"></div><div id="boot"></div>
+
+<script>
+window.__R = []; window.__E = [];
+window.addEventListener('error', e => window.__E.push('ERR:' + (e.message||'') + '@' + (e.filename||'').split(/[\\/]/).pop() + ':' + e.lineno));
+window.addEventListener('unhandledrejection', e => window.__E.push('REJ:' + ((e.reason && (e.reason.message||e.reason)) || '?')));
+const _ce = console.error; console.error = function(){ window.__E.push('CE:' + [].join.call(arguments,' ').slice(0,160)); _ce.apply(console, arguments); };
+</script>
+<script src="../vendor/three.min.js"></script>
+<script src="../js/mapdata.js"></script>
+<script src="../js/data_sites.js"></script>
+<script src="../js/data_factions.js"></script>
+<script src="../js/data_generals.js"></script>
+<script src="../js/data_portraits.js"></script>
+<script src="../js/portrait.js"></script>
+<script src="../js/portraits.js"></script>
+<script src="../js/core.js"></script>
+<script src="../js/slice.js"></script>
+<script src="../js/battle.js"></script>
+<script src="../js/save.js"></script>
+<script src="../js/map3d.js"></script>
+<script src="../js/battle3d.js"></script>
+<script>
+const R = s => window.__R.push(s);
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const shot = (cv,w,h) => { const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(cv,0,0,w,h);
+  const d=c.getContext('2d').getImageData(0,0,w,h).data; let nb=0; for(let i=0;i<d.length;i+=4) if(d[i]+d[i+1]+d[i+2]>30) nb++; return nb/(w*h); };
+(async () => {
+ try {
+  R('proto=' + location.protocol);
+  R('mods=' + ['THREE','SANGUO_MAP','GameCore','Battle','SaveSys','MapView','BattleView','Portraits','Slice','PortraitGen'].filter(n=>!window[n]).length + 'missing');
+  R('sites=' + SANGUO_SITES.length + ' gens=' + SANGUO_ROSTER.factions.caocao.members.length + ' portraits=' + Object.keys(PORTRAIT_INDEX.chars).length);
+  const S = GameCore.newState('caocao', SANGUO_SCENARIO_189); GameCore.S = S;
+  GameCore.buildAdjacency(); GameCore.initWars();
+  R('state ok cities=' + Object.keys(S.cities).length + ' gens=' + Object.keys(S.generals).length + ' wars=' + Object.keys(S.war).length);
+  const oks = await Slice.init();
+  R('slice=' + (oks ? Slice.size().W + 'x' + Slice.size().H : 'FAIL'));
+  SANGUO_MAP.sampleBattle = Slice.sample;
+  // 关键：file:// 下内嵌 PNG -> canvas 读取是否被安全策略阻断
+  const cv = document.getElementById('mapCanvas');
+  cv.style.cssText = 'position:fixed;left:0;top:0;width:900px;height:640px';
+  await MapView.init(cv, {});
+  const h1 = MapView.terrainHeightAt(104.07,30.66), h2 = MapView.terrainHeightAt(121.47,31.23), h3 = MapView.terrainHeightAt(116.4,39.9);
+  R('height decode: chengdu=' + h1.toFixed(2) + ' shanghai=' + h2.toFixed(2) + ' beijing=' + h3.toFixed(2));
+  await wait(2200);
+  R('map render nonblack=' + (shot(cv,450,320)*100).toFixed(1) + '%');
+  await fetch('data:,x').catch(()=>{});
+  // 头像
+  const src = Portraits.src('关羽');
+  R('portrait url=' + String(src).split('/').slice(-1)[0]);
+  const img = await Portraits.get('关羽');
+  R('portrait img=' + (img ? img.width + 'x' + img.height : 'FAIL'));
+  const cc = document.createElement('canvas'); cc.width=96; cc.height=96;
+  await Portraits.paint(cc, S.generals[Object.keys(S.generals)[0]], {size:96});
+  const pd = cc.getContext('2d').getImageData(0,0,96,96).data;
+  let nz=0; for(let i=0;i<pd.length;i+=4) if(pd[i]+pd[i+1]+pd[i+2]>40) nz++;
+  R('portrait paint=' + (nz/(96*96)*100).toFixed(0) + '%');
+  // 战斗
+  const city = S.cities['luoyang'];
+  const field = Battle.buildBattlefield(city.lon, city.lat, 'ft', {dir:'north', sample:3, road:true});
+  const tf={}; field.grid.forEach(t=>tf[t]=(tf[t]||0)+1);
+  R('field=' + field.w + 'x' + field.h + ' passable=' + ((field.grid.filter(t=>t!=='water'&&t!=='peak').length/(field.w*field.h))*100).toFixed(0) + '%');
+  const gs = GameCore.generalsIn('chenliu').slice(0,3);
+  const bt = Battle.createBattle({ field, city,
+    attacker:{faction:'caocao',name:'A',units:gs.map(g=>({general:g,troopType:'gun',troops:9000,train:60,morale:75}))},
+    defender:{faction:'dongzhuo',name:'B',units:[],cityGarrison:{troops:9000,train:60,morale:75,troopType:'gun'}} });
+  let rd=0; while(!bt.over && rd<80){ Battle.aiSide(bt); if(!bt.over) Battle.endSide(bt); rd++; }
+  R('battle rounds=' + rd + ' winner=' + bt.winner + ' log=' + bt.log.length);
+  const bcv = document.getElementById('battleCanvas');
+  bcv.style.cssText = 'position:fixed;left:0;top:0;width:900px;height:640px';
+  bcv.classList.remove('hidden');
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  await BattleView.init(bcv);
+  const bt2 = Battle.createBattle({ field, city,
+    attacker:{faction:'caocao',name:'A',units:gs.map(g=>({general:g,troopType:'gun',troops:9000,train:60,morale:75}))},
+    defender:{faction:'dongzhuo',name:'B',units:[],cityGarrison:{troops:9000,train:60,morale:75,troopType:'gun'}} });
+  BattleView.load(bt2);
+  await wait(2400);
+  R('battle render nonblack=' + (shot(bcv,450,320)*100).toFixed(1) + '%');
+  // 存档
+  const ser = SaveSys.serialize();
+  R('save=' + (JSON.stringify(ser).length/1024).toFixed(0) + 'KB slot=' + (SaveSys.saveLocal(1).ok ? 'ok' : 'fail') + ' load=' + (SaveSys.loadLocal(1).ok ? 'ok':'fail'));
+  R('errors=' + window.__E.length);
+ } catch (e) { window.__E.push('FATAL:' + e.message); }
+ document.title = 'RESULT|' + window.__R.join(' ; ') + '|ERRORS|' + (window.__E.join(' ~ ') || 'none');
+})();
+</script>
+</body></html>

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>地图几何检查</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>#log{position:fixed;inset:0;z-index:9999;background:#0b0906;color:#c8d8e8;font:12px/1.62 Consolas,"Microsoft YaHei",monospace;padding:14px;overflow:auto;white-space:pre-wrap}
+#mapCanvas{position:fixed;left:0;top:0;width:760px;height:560px}</style></head>
+<body>
+<canvas id="mapCanvas"></canvas><div id="log"></div>
+<script>
+window.__DIAG={errors:[]};window.__MAPDBG={};
+window.addEventListener('error',e=>window.__DIAG.errors.push(e.message+' @'+e.filename+':'+e.lineno));
+window.addEventListener('unhandledrejection',e=>window.__DIAG.errors.push('rej: '+(e.reason&&(e.reason.stack||e.reason.message))));
+</script>
+<script src="/vendor/three.min.js"></script>
+<script src="/js/mapdata.js"></script>
+<script src="/js/data_sites.js"></script>
+<script src="/js/data_factions.js"></script>
+<script src="/js/data_generals.js"></script>
+<script src="/js/data_portraits.js"></script>
+<script src="/js/portrait.js"></script>
+<script src="/js/portraits.js"></script>
+<script src="/js/core.js"></script>
+<script src="/js/slice.js"></script>
+<script src="/js/battle.js"></script>
+<script src="/js/map3d.js"></script>
+<script>
+const L=[];const out=document.getElementById('log');
+const say=s=>{L.push(String(s).replace(/<[^>]+>/g,''));out.textContent=L.join('\n');window.__PARTIAL=L.join('\n');};
+setTimeout(()=>{if(!window.__DIAG.sent)fetch('/result',{method:'POST',body:(window.__PARTIAL||'(空)')+'\n\nWATCHDOG'});},70000);
+(async()=>{
+  const S=GameCore.newState('caocao',window.SANGUO_SCENARIO_189);GameCore.S=S;
+  GameCore.buildAdjacency();GameCore.initWars();
+  await Slice.init();SANGUO_MAP.sampleBattle=Slice.sample;
+  const cv=document.getElementById('mapCanvas');
+  cv.width=760;cv.height=560;
+  await MapView.init(cv,{});
+  say('=== 几何自检 ===');
+  say(JSON.stringify(window.__MAPDBG.geom,null,1));
+  say('heightGrid 高程范围: '+JSON.stringify(window.__MAPDBG.heightRange)+' m (已压缩)');
+  say('HSCALE*EXAG = '+(MapView.HSCALE*MapView.EXAG).toFixed(6)+'  即 8849m -> '+ (8849*MapView.HSCALE*MapView.EXAG).toFixed(1)+' 世界单位');
+  say('顶点抽样: '+JSON.stringify(window.__MAPDBG.vertExample));
+  say('');
+  say('=== heightGrid 采样校验 ===');
+  const hs=(lon,lat)=>{const fx=(lon-SANGUO_MAP.lonMin)/(SANGUO_MAP.lonMax-SANGUO_MAP.lonMin)*(SANGUO_MAP.gridW-1);
+    const fy=(SANGUO_MAP.latMax-lat)/(SANGUO_MAP.latMax-SANGUO_MAP.latMin)*(SANGUO_MAP.gridH-1);
+    return MapView.terrainHeightAt(lon,lat);};
+  say([['珠峰',86.9,27.99],['拉萨',91.1,29.65],['成都',104.07,30.66],['上海',121.47,31.23],['北京',116.4,39.9],['洛阳',112.45,34.62]]
+    .map(([n,lo,la])=>n+' '+hs(lo,la).toFixed(2)).join('  ')+' (世界单位, 应≈米*0.0075)');
+  say('');
+  say('=== 截图（A/B 对照：贴图 vs 纯色，判断尖刺来自几何还是贴图）===');
+  const terrain = MapView.scene.getObjectByName('terrain');
+  const views = [['近景洛阳',112.45,34.62,16],['中原',114,34,60],['全国',112,33,110],['青藏',90,32,70]];
+  for (const [label, lon, lat, d] of views) {
+    MapView.focusOn(lon,lat,d);
+    await new Promise(r=>setTimeout(r,1500));
+    const c=document.createElement('canvas');c.width=380;c.height=280;
+    c.getContext('2d').drawImage(cv,0,0,380,280);
+    await fetch('/shot',{method:'POST',body:c.toDataURL('image/png')});
+    say(`  [贴图] ${label}`);
+  }
+  say('--- 切换为纯色材质（无贴图）---');
+  const origMat = terrain.material;
+  terrain.material = new THREE.MeshStandardMaterial({ color: 0x8a9a6a, roughness: 0.95, vertexColors: false });
+  for (const [label, lon, lat, d] of views) {
+    MapView.focusOn(lon,lat,d);
+    await new Promise(r=>setTimeout(r,1500));
+    const c=document.createElement('canvas');c.width=380;c.height=280;
+    c.getContext('2d').drawImage(cv,0,0,380,280);
+    await fetch('/shot',{method:'POST',body:c.toDataURL('image/png')});
+    say(`  [纯色] ${label}`);
+  }
+  terrain.material = origMat;
+  // 相机诊断
+  const cc = MapView.camera;
+  MapView.focusOn(114,34,60);
+  await new Promise(r=>setTimeout(r,1200));
+  say('');
+  say('=== 相机诊断 ===');
+  say(`  camera pos = (${cc.position.x.toFixed(1)}, ${cc.position.y.toFixed(1)}, ${cc.position.z.toFixed(1)})`);
+  const clon = cc.position.x + (SANGUO_MAP.lonMin+SANGUO_MAP.lonMax)/2;
+  const clat = -cc.position.z + (SANGUO_MAP.latMin+SANGUO_MAP.latMax)/2;
+  say(`  相机所在经纬度 = (${clon.toFixed(2)}, ${clat.toFixed(2)})  该处地形高 = ${MapView.terrainHeightAt(clon,clat).toFixed(2)}`);
+  say(`  近裁剪面 near=0.5  地形最高顶点 46.2`);
+  say('errors: '+JSON.stringify(window.__DIAG.errors));
+  window.__DIAG.sent=true;
+  await fetch('/result',{method:'POST',body:L.join('\n')});
+  document.title='DONE';
+})();
+</script></body></html>

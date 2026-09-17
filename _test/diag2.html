@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>游戏完整诊断</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  #wrap{position:fixed;inset:0;z-index:1}
+  #mapCanvas{border:0}
+  #log{position:fixed;right:0;top:0;width:430px;bottom:0;z-index:9999;background:rgba(8,6,4,.93);color:#c8d8e8;
+       font:11.5px/1.62 Consolas,"Microsoft YaHei",monospace;padding:12px;overflow:auto;white-space:pre-wrap;border-left:1px solid #443}
+  #log b{color:#e8c86a}.ok{color:#7ad0a8}.err{color:#ff7a5a}.warn{color:#e8c05a}.dim{color:#8a8272}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="mapCanvas" style="width:100%;height:100%"></canvas><canvas id="battleCanvas" class="hidden"></canvas></div>
+<div id="log"></div>
+
+<!-- 游戏所需 DOM（复用正式 CSS 的 id） -->
+<div id="app" class="hidden">
+  <div id="factionBadge"><span class="fb-flag"></span><span class="fb-name"></span></div>
+  <div id="dateBox"></div><span id="resGold"></span><span id="resFood"></span><span id="resTroops"></span>
+  <span id="resCities"></span><span id="resGenerals"></span>
+  <button id="btnRoster"></button><button id="btnPowers"></button><button id="btnLog"></button>
+  <button id="btnSave"></button><button id="btnLoad"></button><button id="btnHelp"></button><button id="btnEndTurn"></button>
+  <div id="powerList"></div>
+  <div id="cityPanel"><span id="cityName"></span><span id="cityKind"></span><div id="cityOwner"></div>
+    <div id="cityStats"></div><div id="cityGenerals"></div><div id="cityActions"></div></div>
+</div>
+<div id="battleUI" class="hidden"><div id="btAtkName"></div><div id="btDefName"></div><div id="btAtkTroops"></div>
+  <div id="btDefTroops"></div><div id="btTurn"></div><div id="btSideNow"></div><div id="btWeather"></div>
+  <div id="battleLog"></div><div id="unitPanel"></div>
+  <button id="btWait"></button><button id="btDefend"></button><button id="btSpecial"></button>
+  <button id="btAuto"></button><button id="btEndSide"></button><div id="battleResult"></div></div>
+<div id="modal" class="hidden"><span id="modalTitle"></span><button id="modalClose"></button><div id="modalBody"></div></div>
+<div id="tooltip" class="hidden"></div><div id="boot"></div><div id="toastLayer"></div><div id="hintBar"></div>
+
+<script>
+window.__DIAG = { errors: [], warns: [], done: false };
+window.addEventListener('error', (e) => window.__DIAG.errors.push('window.onerror: ' + e.message + ' @ ' + (e.filename||'') + ':' + (e.lineno||0)));
+window.addEventListener('unhandledrejection', (e) => window.__DIAG.errors.push('unhandled: ' + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
+const _ce = console.error, _cw = console.warn;
+console.error = function(){ window.__DIAG.errors.push('console.error: ' + [].join.call(arguments,' ')); _ce.apply(console, arguments); };
+console.warn  = function(){ window.__DIAG.warns.push([].join.call(arguments,' ')); _cw.apply(console, arguments); };
+
+// 看门狗：无论主脚本是否语法错误/卡死，都保证回传已有诊断内容
+window.__PARTIAL = [];
+window.__postPartial = function (reason) {
+  if (window.__DIAG.sent) return;
+  window.__DIAG.sent = true;
+  const body = (window.__PARTIAL.join('\n') || '(脚本未能执行)') +
+    '\n\n___REASON___\n' + reason +
+    '\n\n___ERRORS___\n' + JSON.stringify(window.__DIAG.errors, null, 1);
+  fetch('/result', { method: 'POST', body }).catch(() => {});
+};
+setTimeout(() => window.__postPartial('看门狗 80s 超时（主脚本可能卡住或语法错误）'), 80000);
+setTimeout(() => window.__postPartial('看门狗 170s 超时'), 170000);
+window.addEventListener('error', (e) => { window.__postPartial('window.onerror: ' + e.message + ' @' + (e.filename||'') + ':' + (e.lineno||0)); });
+</script>
+<script src="/vendor/three.min.js"></script>
+<script src="/js/mapdata.js"></script>
+<script src="/js/data_sites.js"></script>
+<script src="/js/data_factions.js"></script>
+<script src="/js/data_generals.js"></script>
+<script src="/js/data_portraits.js"></script>
+<script src="/js/portrait.js"></script>
+<script src="/js/portraits.js"></script>
+<script src="/js/core.js"></script>
+<script src="/js/slice.js"></script>
+<script src="/js/battle.js"></script>
+<script src="/js/save.js"></script>
+<script src="/js/map3d.js"></script>
+<script src="/js/battle3d.js"></script>
+
+<script>
+const out = document.getElementById('log');
+const L = [];
+const plain = (s) => String(s).replace(/<[^>]+>/g, '').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+const say = (s, c) => {
+  L.push(c ? '<span class="'+c+'">'+s+'</span>' : s);
+  window.__PARTIAL.push(plain(s));
+  out.innerHTML = L.join('\n'); out.scrollTop = out.scrollHeight;
+};
+const ok   = (s) => say('  <span class="ok">✔</span> ' + s);
+const bad  = (s) => say('  <span class="err">✘ ' + s + '</span>');
+const warn = (s) => say('  <span class="warn">! ' + s + '</span>');
+const dim  = (s) => say('    <span class="dim">' + s + '</span>');
+const head = (s) => say('\n<b>▍' + s + '</b>');
+const T = () => performance.now();
+let tMark = T();
+const lap = (label) => { const d = T() - tMark; tMark = T(); dim(`（${label} 用时 ${d.toFixed(0)} ms）`); return d; };
+
+function canvasStats(cv, w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  x.drawImage(cv, 0, 0, w, h);
+  const d = x.getImageData(0, 0, w, h).data;
+  let nonBlack = 0, sum = 0; const hist = {};
+  for (let i = 0; i < d.length; i += 4) {
+    const v = d[i] + d[i+1] + d[i+2]; sum += v;
+    if (v > 40) nonBlack++;
+    const key = ((d[i]>>5)<<6) | ((d[i+1]>>5)<<3) | (d[i+2]>>5);
+    hist[key] = (hist[key]||0)+1;
+  }
+  return { ratio: nonBlack/(w*h), bright: sum/(w*h*3), colors: Object.keys(hist).length, url: c.toDataURL('image/png') };
+}
+
+(async () => {
+  const t0 = T();
+  try {
+    head('1 · 全局对象');
+    const need = ['THREE','SANGUO_MAP','SANGUO_SITES','SANGUO_FACTIONS','SANGUO_ROSTER','PORTRAIT_INDEX','PortraitGen','Portraits','GameCore','Battle','SaveSys','MapView','BattleView'];
+    const miss = need.filter(n => !window[n]);
+    miss.length ? bad('缺失: ' + miss.join(',')) : ok(need.length + ' 个核心对象全部就绪');
+    if (miss.length) throw new Error('核心对象缺失');
+
+    head('2 · 地图数据');
+    const M = window.SANGUO_MAP;
+    dim(`经度 ${M.lonMin.toFixed(2)}~${M.lonMax.toFixed(2)}  纬度 ${M.latMin.toFixed(2)}~${M.latMax.toFixed(2)}`);
+    dim(`网格 ${M.gridW}x${M.gridH} = ${(M.gridW*M.gridH/1000).toFixed(0)}k 顶点  战斗切片 ${M.batW}x${M.batH}  贴图 ${M.texW}x${M.texH}`);
+    ok(`内嵌资源 ${((M.gridPNG.length+M.batPNG.length+M.texPNG.length)/1048576).toFixed(2)} MB (base64)`);
+
+    head('3 · 数据完整性');
+    const sites = window.SANGUO_SITES;
+    const scen = window.SANGUO_SCENARIO_189.owner;
+    const rid = new Set(sites.map(s=>s.id));
+    dim(`城池/关隘 ${sites.length} 处，剧本归属 ${Object.keys(scen).filter(k=>rid.has(k)).length} 处`);
+    rid.size === sites.length ? ok('城 id 唯一') : bad('城 id 重复');
+    const badGuard = []; sites.forEach(s => (s.guards||[]).forEach(g => { if(!rid.has(g)) badGuard.push(s.name+'→'+g); }));
+    badGuard.length ? bad('guards 无效引用: '+badGuard.join(',')) : ok('guards 引用全部有效');
+    const R = window.SANGUO_ROSTER, idx = window.PORTRAIT_INDEX.chars;
+    let named=0, withP=0; const noP=[];
+    for (const f of Object.values(R.factions)) for (const g of f.members) { named++; if (idx[g.n]) withP++; else noP.push(g.n); }
+    ok(`势力名册 ${named} 人，真实头像覆盖 ${withP} 人 (${(withP/named*100).toFixed(0)}%)`);
+    noP.length ? warn('缺头像: ' + noP.join('、')) : ok('全部有真实头像');
+    const portFiles = Object.keys(idx).length;
+    dim(`头像素材库共 ${portFiles} 人可用`);
+
+    head('4 · 建立游戏状态');
+    let S = GameCore.newState('caocao', window.SANGUO_SCENARIO_189);
+    GameCore.S = S; GameCore.buildAdjacency(); GameCore.initWars();
+    ok(`${Object.keys(S.factions).length} 势力 · ${Object.keys(S.cities).length} 城 · ${Object.keys(S.generals).length} 武将`);
+    const my = GameCore.factionCities('caocao');
+    ok(`曹操 ${my.length} 城: ${my.map(c=>c.name).join('、')}`);
+    const mg = GameCore.factionGenerals('caocao').filter(g=>g.faction==='caocao');
+    ok(`曹操武将 ${mg.length} 名: ${mg.slice(0,7).map(g=>g.name).join('、')}…`);
+    dim(`在野武将 ${Object.values(S.generals).filter(g=>g.faction==='neutral').length} 名  ·  交战组合 ${Object.keys(S.war).length}`);
+    lap('newState');
+
+    head('5 · 邻接与寻路');
+    const ac = Object.values(S.adj).map(a=>a.length);
+    dim(`平均相邻 ${(ac.reduce((a,b)=>a+b,0)/ac.length).toFixed(1)}，最少 ${Math.min(...ac)}`);
+    const iso = Object.entries(S.adj).filter(([,v])=>!v.length).map(([k])=>S.cities[k].name);
+    iso.length ? bad('孤立城: '+iso.join('、')) : ok('无孤立城池');
+    const seen=new Set(['luoyang']), q=['luoyang'];
+    while(q.length){const c=q.shift();for(const n of S.adj[c])if(!seen.has(n)){seen.add(n);q.push(n);}}
+    seen.size===Object.keys(S.cities).length ? ok(`全图连通（自洛阳可达 ${seen.size} 城）`) : bad(`不连通 ${seen.size}/${Object.keys(S.cities).length}`);
+    const pth = GameCore.findPath('luoyang','xiangping');
+    pth ? ok(`寻路 洛阳→襄平 ${pth.length} 站: ${pth.slice(0,7).map(i=>S.cities[i].name).join('→')}…`) : bad('跨图寻路失败');
+    const pth2 = GameCore.findPath('dunhuang','jiaozhi');
+    pth2 ? ok(`寻路 敦煌→龙编 ${pth2.length} 站`) : bad('丝路寻路失败');
+
+    head('6 · 内政 / 军事 / 后勤');
+    const cap = my.find(c=>c.kind==='capital')||my[0];
+    const g0 = S.factions.caocao.gold;
+    const r1 = GameCore.Actions.develop('caocao', cap.id, 'agri');
+    const r2 = GameCore.Actions.recruit('caocao', cap.id, 5000);
+    ok(`开垦: ${r1.msg||r1.ok}`); ok(`征兵: ${r2.msg||r2.ok}`);
+    const neutCities = Object.values(S.cities).filter(c => GameCore.generalsIn(c.id).some(g=>g.faction==='neutral'));
+    dim(`有在野武将的城池 ${neutCities.length} 座: ${neutCities.slice(0,8).map(c=>c.name+'('+GameCore.generalsIn(c.id).filter(g=>g.faction==='neutral').length+')').join(' ')}`);
+    if (neutCities.length) {
+      const nc = neutCities[0];
+      const ng = GameCore.generalsIn(nc.id).find(g=>g.faction==='neutral');
+      const r3 = GameCore.Actions.recruitGeneral('caocao', nc.id, ng.id);
+      ok(`登用(${nc.name}): ${r3.msg}`);
+    } else warn('无在野武将可登用');
+    const r4 = GameCore.Actions.train('caocao', cap.id); ok(`训练: ${r4.msg}`);
+    S.month = 9; const ev = GameCore.factionTick('caocao');
+    ok(`秋收结算：金 ${g0}→${S.factions.caocao.gold}，粮 ${S.factions.caocao.food}，事件 ${ev.length}`);
+    const gg = GameCore.generalsIn(cap.id).filter(g=>!g.army).slice(0,3);
+    const fa = GameCore.formArmy('caocao', cap.id, gg.map(g=>g.id), Math.floor(cap.troops*0.6), null);
+    fa.ok ? ok(`出兵 ${GameCore.armyName(fa.army)} 兵 ${fa.army.troops} 粮 ${fa.army.food}`) : bad('出兵失败 '+fa.msg);
+    const tgt = Object.values(S.cities).find(c=>c.owner!=='caocao'&&c.owner!=='neutral'&&GameCore.atWar('caocao',c.owner));
+    const mr = GameCore.marchArmy(fa.army, tgt.id);
+    ok(`进军 ${tgt.name}（${tgt.owner}）路径 ${mr.path?mr.path.length:0} 站`);
+    for (let i=0;i<3;i++) GameCore.stepArmy(fa.army);
+    ok(`行军推进至 ${S.cities[fa.army.at].name}，余粮 ${fa.army.food}，状态 ${fa.army.state}`);
+    lap('内政军事');
+
+    head('7 · AI 势力推演（3 回合）');
+    let totalActs = 0;
+    for (let turn=0; turn<3; turn++) {
+      GameCore.beginTurn();
+      for (const f of Object.values(S.factions)) {
+        if (f.id==='neutral'||!f.alive) continue;
+        const e = GameCore.aiFaction(f.id);
+        if (e && e.length) totalActs += e.length;
+      }
+      GameCore.endTurn();
+    }
+    ok(`3 回合 AI 完成，共 ${totalActs} 条 AI 事件，当前 ${S.year}年${S.month}月`);
+    const alive = Object.values(S.factions).filter(f=>f.id!=='neutral'&&GameCore.factionCities(f.id).length>0).length;
+    dim(`存活势力 ${alive} 家  ·  军团 ${S.armies.length} 支  ·  军报 ${S.log.length} 条`);
+    lap('AI 推演');
+
+    head('8 · 真实地形 → 战场切片');
+    const sliceOk = await window.Slice.init();
+    window.SANGUO_MAP.sampleBattle = window.Slice.sample;
+    sliceOk ? ok(`高程切片解码成功 ${window.Slice.size().W}×${window.Slice.size().H}`) : bad('高程切片解码失败');
+    // 用经纬度反算切片坐标，校验真实高程
+    const smp = (lon, lat) => window.Slice.sample(
+      ((lon - M.lonMin) / (M.lonMax - M.lonMin)) * M.batW,
+      ((M.latMax - lat) / (M.latMax - M.latMin)) * M.batH);
+    dim('切片高程校验: ' + [['珠峰',86.9,27.99,8849],['拉萨',91.1,29.65,3650],['成都',104.07,30.66,500],
+      ['上海',121.47,31.23,4],['北京',116.4,39.9,44],['洛阳',112.45,34.62,144]]
+      .map(([n,lo,la,ref]) => `${n} ${smp(lo,la).toFixed(0)}m(实际${ref})`).join('  '));
+    const field = Battle.buildBattlefield(cap.lon, cap.lat, 'diag', { dir:'north', sample:3, road:true });
+    const tf={}; field.grid.forEach(t=>tf[t]=(tf[t]||0)+1);
+    ok(`战场 ${field.w}×${field.h} 格`);
+    dim('地形: ' + Object.entries(tf).map(([k,v])=>Battle.TERRAIN[k].name+' '+v).join('  '));
+    dim(`攻方起始 ${field.zones.attacker.length} 格  守方 ${field.zones.defender.length} 格  高程跨度 ${field.info.range} m`);
+    const passable = field.grid.filter(t=>t!=='water'&&t!=='peak').length;
+    passable/(field.w*field.h) > 0.5 ? ok(`可通行比例 ${(passable/(field.w*field.h)*100).toFixed(0)}%`) : warn(`可通行仅 ${(passable/(field.w*field.h)*100).toFixed(0)}%，可能过于崎岖`);
+    // 多个地点采样，检查地形多样性
+    const samples = ['luoyang','chengdu','jiangling','hefei','tianshui','xiangyang'];
+    const lines = [];
+    for (const sid of samples) {
+      const c = S.cities[sid];
+      const f = Battle.buildBattlefield(c.lon, c.lat, sid, { dir:'north', sample:3 });
+      const t2={}; f.grid.forEach(t=>t2[t]=(t2[t]||0)+1);
+      lines.push(`${c.name}: ${Object.entries(t2).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>Battle.TERRAIN[k].name+v).join(' ')}`);
+    }
+    dim(lines.join('　|　'));
+
+    head('9 · 战斗推演');
+    const atkGens = GameCore.generalsIn(cap.id).filter(g=>g.faction==='caocao').slice(0,3);
+    const defCity = tgt;
+    const defGens = GameCore.generalsIn(defCity.id).filter(g=>g.faction===defCity.owner).slice(0,2);
+    const mkU = (g,tt,n)=>({general:g, troopType:tt||'gun', troops:n||9000, train:62, morale:76});
+    const bcfg = { field, city: defCity,
+      attacker:{ faction:'caocao', name:'曹军', units: atkGens.map(g=>mkU(g)) },
+      defender:{ faction:defCity.owner, name:'敌军', units: defGens.map(g=>mkU(g,'ride')), cityGarrison:{ troops: Math.round(defCity.troops*0.4), train:defCity.train, morale:defCity.morale, troopType:'gun', general:defGens[0]||null } } };
+    const B = Battle.createBattle(bcfg);
+    ok(`战斗创建：攻 ${B.units.filter(u=>u.side==='attacker').length} 队 vs 守 ${B.units.filter(u=>u.side==='defender').length} 队，天候「${B.weather.name}」`);
+    const atkSp = atkGens.map(g=>g.name+'·'+Battle.generalSpecial(g).name).join('  ');
+    dim('攻方战法: ' + atkSp);
+    let rounds=0;
+    while (!B.over && rounds<60) { Battle.aiSide(B); if(!B.over) Battle.endSide(B); rounds++; }
+    ok(`推演 ${rounds} 个半回合后结束，胜者 = ${B.winner}`);
+    dim('战报摘录: ' + B.log.filter(l=>l.dmg).slice(0,3).map(l=>l.text).join(' | '));
+    // 通配：每种兵种 + 每种战法都跑一遍，确认无异常
+    let crash=0;
+    for (const tt of Object.keys(Battle.TROOPS)) {
+      try {
+        const f2 = Battle.buildBattlefield(cap.lon, cap.lat, tt, { dir:'west', sample:3 });
+        const B2 = Battle.createBattle({ field:f2, city:cap,
+          attacker:{faction:'caocao',name:'A',units:[mkU(atkGens[0],tt,9000),mkU(atkGens[1],tt,9000)]},
+          defender:{faction:'yuanshao',name:'B',units:[mkU(defGens[0]||atkGens[0],tt,9000)],cityGarrison:{troops:5000,train:50,morale:70,troopType:'gun'}} });
+        let g2=0; while(!B2.over&&g2<40){Battle.aiSide(B2); if(!B2.over)Battle.endSide(B2); g2++;}
+      } catch(e){ crash++; bad(`兵种 ${tt} 战斗异常: ${e.message}`); }
+    }
+    crash===0 ? ok(`${Object.keys(Battle.TROOPS).length} 种兵种全部推演通过`) : bad(`${crash} 种兵种异常`);
+    // 全部特殊战法
+    let spCrash = 0;
+    const spGens = Object.values(S.generals).filter(g=>Battle.SPECIALS[g.name]).slice(0,40);
+    for (const g of spGens) {
+      try {
+        const f3 = Battle.buildBattlefield(cap.lon, cap.lat, g.name, { dir:'north', sample:3 });
+        const B3 = Battle.createBattle({ field:f3, city:cap,
+          attacker:{faction:'caocao',name:'A',units:[{general:g,troopType:'hal',troops:12000,train:80,morale:90}]},
+          defender:{faction:'yuanshao',name:'B',units:[{general:defGens[0]||atkGens[0],troopType:'gun',troops:12000,train:60,morale:70}]} });
+        const u = B3.units.find(x=>x.side==='attacker');
+        const d = B3.units.find(x=>x.side==='defender');
+        Battle.applyAttack(B3, u, d, { special:true, useIntel: !!(u.special&&u.special.intel) });
+      } catch(e){ spCrash++; if(spCrash<4) bad(`战法 ${g.name} 异常: ${e.message}`); }
+    }
+    spCrash===0 ? ok(`${spGens.length} 名武将专属战法全部执行通过`) : bad(`${spCrash} 个战法异常`);
+    // 战斗节奏统计：平均几回合分胜负？单次攻击打掉多少兵？
+    const rdList=[], winners={none:0,attacker:0,defender:0,draw:0}; let dmgPct=[];
+    for (let i=0;i<25;i++){
+      const f4 = Battle.buildBattlefield(cap.lon, cap.lat, 'r'+i, { dir:'north', sample:3 });
+      const B4 = Battle.createBattle({ field:f4, city:cap,
+        attacker:{faction:'caocao',name:'A',units:[{general:atkGens[0],troopType:'gun',troops:9000,train:62,morale:76},
+                                                   {general:atkGens[1],troopType:'hal',troops:9000,train:62,morale:76}]},
+        defender:{faction:'yuanshao',name:'B',units:[{general:defGens[0]||atkGens[0],troopType:'ride',troops:9000,train:62,morale:76}],
+                  cityGarrison:{troops:9000,train:62,morale:76,troopType:'gun'}} });
+      const u0=B4.units.find(u=>u.side==='attacker'), d0=B4.units.find(u=>u.side==='defender');
+      const before=d0.troops;
+      Battle.applyAttack(B4,u0,d0,{});
+      dmgPct.push((before-d0.troops)/before*100);
+      let rd2=0; while(!B4.over && rd2<40){ Battle.aiSide(B4); if(!B4.over) Battle.endSide(B4); rd2++; }
+      rdList.push(rd2); winners[B4.winner||'none']++;
+    }
+    const avg=(a)=>a.reduce((x,y)=>x+y,0)/a.length;
+    dim(`战斗节奏 ${rdList.length} 场：平均 ${avg(rdList).toFixed(1)} 半回合结束（中位 ${rdList.slice().sort((a,b)=>a-b)[12]}），单次攻击打掉 ${avg(dmgPct).toFixed(1)}% 兵力`);
+    dim(`胜负分布：攻方胜 ${winners.attacker} / 守方胜 ${winners.defender} / 两败 ${winners.draw} / 未决 ${winners.none}`);
+    (winners.none===0) ? ok('所有战斗均能在 40 半回合内分出胜负') : bad(`${winners.none} 场战斗超时未决`);
+    (avg(dmgPct)>=8 && avg(dmgPct)<=32) ? ok(`单次攻击伤害 ${avg(dmgPct).toFixed(1)}% 在合理区间（8%~32%，含战法）`) : warn(`单次攻击伤害 ${avg(dmgPct).toFixed(1)}% 偏离预期`);
+    (avg(rdList)<=20) ? ok(`平均 ${avg(rdList).toFixed(1)} 半回合（${(avg(rdList)/2).toFixed(1)} 回合）结束，节奏符合战棋体验`) : warn(`战斗偏长：平均 ${avg(rdList).toFixed(1)} 半回合`);
+    lap('战斗推演');
+
+    head('10 · 头像');
+    try {
+      const t1 = S.generals[Object.keys(S.generals)[0]];
+      const src = window.Portraits.src('关羽');
+      dim('关羽头像 URL: ' + src);
+      const img = await window.Portraits.get('关羽');
+      img ? ok(`真实素材加载成功 ${img.width}×${img.height}`) : bad('真实素材加载失败');
+      const cc = document.createElement('canvas'); cc.width=128; cc.height=128;
+      const gy = Object.values(S.generals).find(g=>g.name==='关羽') || S.generals[Object.keys(S.generals)[0]];
+      await window.Portraits.paint(cc, gy, {size:128});
+      const px = cc.getContext('2d').getImageData(0,0,128,128).data;
+      let nz=0; for(let i=0;i<px.length;i+=4) if(px[i]+px[i+1]+px[i+2]>40) nz++;
+      nz > 128*128*0.5 ? ok(`头像已绘制（非空像素 ${(nz/(128*128)*100).toFixed(0)}%）`) : warn(`头像偏空 ${(nz/(128*128)*100).toFixed(0)}%`);
+    } catch(e){ bad('头像异常: '+e.message); }
+
+    head('11 · Three.js 战略地图渲染');
+    const cv = document.getElementById('mapCanvas');
+    cv.style.cssText = 'position:fixed;left:0;top:0;width:820px;height:620px';
+    GameCore.S = S;
+    await window.MapView.init(cv, {});
+    ok('MapView.init 完成');
+    window.MapView.rebuildCities(); window.MapView.updateCityOwners();
+    window.MapView.rebuildRoads(); window.MapView.rebuildBorders(); window.MapView.rebuildArmies();
+    ok('城池/道路/边界/军团图层构建完成');
+    const cityCnt = window.MapView.scene.children.filter(o=>o.userData&&o.userData.type==='city').length;
+    dim(`场景对象 ${window.MapView.scene.children.length} 个，城池组 ${cityCnt}`);
+    // 近景看洛阳
+    window.MapView.focusOn(112.45, 34.62, 16);
+    await new Promise(r=>setTimeout(r, 2500));
+    let st = canvasStats(cv, 410, 310);
+    dim(`近景(洛阳) 非黑 ${(st.ratio*100).toFixed(1)}%  平均亮度 ${st.bright.toFixed(1)}  色彩簇 ${st.colors}`);
+    st.ratio>0.5 ? ok('近景渲染正常') : bad('近景几乎全黑');
+    window.__SHOT1 = st.url;
+    // 远景全国
+    window.MapView.focusOn(112, 33, 105);
+    await new Promise(r=>setTimeout(r, 2500));
+    st = canvasStats(cv, 410, 310);
+    dim(`远景(全国) 非黑 ${(st.ratio*100).toFixed(1)}%  平均亮度 ${st.bright.toFixed(1)}  色彩簇 ${st.colors}`);
+    st.ratio>0.5 ? ok('远景渲染正常') : bad('远景几乎全黑');
+    window.__SHOT2 = st.url;
+    // 台海视角
+    window.MapView.focusOn(120.5, 27.0, 45);
+    await new Promise(r=>setTimeout(r, 2200));
+    st = canvasStats(cv, 410, 310);
+    window.__SHOT3 = st.url;
+    ok(`地理检查（台海/东南）渲染完成，色彩簇 ${st.colors}`);
+    // 检查地形高度查询是否正确（珠峰、成都、上海）
+    const probe = (lon,lat,n) => { const h = window.MapView.terrainHeightAt(lon,lat); return `${n} ${(h/(window.MapView.HSCALE*window.MapView.EXAG)).toFixed(0)}m(视觉${h.toFixed(1)})`; };
+    dim([probe(86.9,27.99,'珠峰'),probe(104.07,30.66,'成都'),probe(121.47,31.23,'上海'),probe(116.4,39.9,'北京'),probe(91.1,29.65,'拉萨')].join('  '));
+    lap('地图渲染');
+
+    head('12 · Three.js 战场渲染');
+    const bcv = document.getElementById('battleCanvas');
+    bcv.classList.remove('hidden');
+    bcv.style.cssText = 'position:fixed;left:0;top:0;width:820px;height:620px;z-index:25';
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+    dim(`battleCanvas 布局尺寸 ${bcv.clientWidth}x${bcv.clientHeight}`);
+    window.__BT = { frames:0, renders:0, glErr:0 };
+    await window.BattleView.init(bcv);
+    ok('BattleView.init 完成');
+    const B2 = Battle.createBattle(bcfg);
+    window.BattleView.load(B2);
+    ok(`战场载入：${B2.units.length} 支部队`);
+    await new Promise(r=>setTimeout(r, 2600));
+    st = canvasStats(bcv, 410, 310);
+    dim(`战场 非黑 ${(st.ratio*100).toFixed(1)}%  平均亮度 ${st.bright.toFixed(1)}  色彩簇 ${st.colors}  帧数 ${window.__BT.frames}  三角形 ${window.__BT.info?window.__BT.info.tris:'?'}`);
+    st.ratio>0.4 ? ok('战场渲染正常') : bad('战场几乎全黑');
+    window.__SHOT4 = st.url;
+    // 特效
+    window.BattleView.spawnFx('fire', 10, 10); window.BattleView.spawnFx('slash', 12, 12); window.BattleView.spawnFx('impact', 14, 12);
+    await new Promise(r=>setTimeout(r, 400));
+    st = canvasStats(bcv, 410, 310);
+    ok(`战法特效已生成，色彩簇 ${st.colors}`);
+    window.__SHOT5 = st.url;
+    // 高亮
+    const u0 = B2.units.find(u=>u.side==='attacker');
+    window.BattleView.selected = u0;
+    window.BattleView.markSelected(u0);
+    await new Promise(r=>setTimeout(r, 600));
+    ok('移动范围高亮渲染完成');
+    lap('战场渲染');
+
+    head('13 · 存档往返');
+    const ser = SaveSys.serialize();
+    const js = JSON.stringify(ser);
+    const back = SaveSys.deserialize(JSON.parse(js));
+    ok(`序列化 ${(js.length/1024).toFixed(0)} KB → 反序列化 ${Object.keys(back.cities).length} 城 / ${Object.keys(back.generals).length} 将`);
+    const ls = SaveSys.saveLocal(1);
+    const ll = SaveSys.loadLocal(1);
+    ll.ok ? ok('localStorage 槽位往返成功') : bad('localStorage 失败: '+ls.msg);
+    // 深度一致性
+    let diff = 0;
+    for (const k of Object.keys(S.cities)) {
+      const a = S.cities[k], b = back.cities[k];
+      if (a.troops!==b.troops||a.owner!==b.owner||a.agri!==b.agri) diff++;
+    }
+    diff===0 ? ok('存档数据完全一致') : bad(`${diff} 座城池数据不一致`);
+    lap('存档');
+
+    head('14 · 界面刷新');
+    try {
+      // 复用 main.js 的界面函数需要完整 DOM，这里只做最小验证
+      dim('（主界面在 index.html 中加载，此处跳过）');
+    } catch(e){ }
+
+    head('汇总');
+    const errs = window.__DIAG.errors;
+    errs.length ? errs.forEach(e=>bad(e)) : ok('全程无 JS 错误');
+    if (window.__DIAG.warns.length) dim('警告 ' + window.__DIAG.warns.length + ' 条: ' + window.__DIAG.warns.slice(0,3).join(' / '));
+    say(`\n<b>总耗时 ${((T()-t0)/1000).toFixed(1)} s</b>`);
+  } catch (e) {
+    bad('致命错误: ' + e.message);
+    say(e.stack || '', 'err');
+  }
+  window.__DIAG.done = true;
+  // 回传
+  try {
+    window.__DIAG.sent = true;
+    await fetch('/result', { method:'POST', body: L.join('\n') + '\n\n___REASON___\n正常完成\n\n___ERRORS___\n' + JSON.stringify(window.__DIAG.errors, null, 1) });
+    say('<span class="ok">诊断结果已回传</span>');
+  } catch(e){ say('回传失败: '+e.message, 'err'); }
+  for (const k of ['__SHOT1','__SHOT2','__SHOT3','__SHOT4','__SHOT5']) {
+    if (window[k]) { try { await fetch('/shot', { method:'POST', body: window[k] }); } catch(e){} }
+  }
+  document.title = 'DIAG-DONE';
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+# 仓库外离线素材（Natural Earth 原始数据 / DEM 瓦片缓存 / 三国志原始 JSON）
+# 存放在同级目录 ../sanguo-warchess-build/，由 _source/*.js 引用
+../sanguo-warchess-build/
+
+# 注意：assets/portraits/（1052 张，46 MB）**已纳入版本控制**。
+# 图像版权归 光荣特库摩 (Koei Tecmo)，仅供本地学习/原型/个人非商业用途。
+# 若本仓库要公开或商用，请先删除该目录——游戏会自动回退到
+# js/portrait.js 的程序化头像生成，并在 README 中说明补齐方式。
+
+# 开发期临时产物
+/_test/_out/
+*.log
+_diag_result.json
+_shot_*.png
+_chrome_*.log
+
+# 编辑器与系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 依赖（本仓库刻意不使用 npm，防止误提交）
+node_modules/
+package-lock.json
