@@ -14,6 +14,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [`docs/AGENT-GUIDE.md`](docs/AGENT-GUIDE.md) | **交接说明**：当前状态、一条命令跑测试、改不同部分该验证什么、不能碰的硬约束、环境坑、改数值入口速查 |
 | [`docs/INDEX.md`](docs/INDEX.md) | 文档导航与一分钟概览 |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | 开发文档：坐标系、地形烘焙管线、渲染管线、模块 API、存档格式、常见坑 |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | 设计文档：全部数值公式、平衡标定过程、剧本设计 |
@@ -182,13 +183,25 @@ node _source/fetch-tiles.js   # 可选：预下载 z6 瓦片
 
 ## 七、测试
 
-`_test/` 下有可用的自动化测试页（需本地服务器，运行方法见 [`docs/TESTING.md`](docs/TESTING.md#21-运行方式)）：
+**一条命令跑完全部回归测试**（约 3 分钟，4 个页面 / 101 项断言）：
 
-- `ui.html` —— 通过 iframe 驱动真实 `index.html`，走完 开局 → 内政 → 弹窗 → 回合 → 出兵 → 战斗 → 存档 全流程并截图
-- `diag2.html` —— 数据完整性、邻接连通性、战场生成、兵种/战法全推演、**25 场战斗节奏统计**、存档一致性
-- `geo.html` —— 地形几何自检（顶点范围、相邻跳变、取景）与多视角截图
-- `bt.html` / `filediag.html` —— 战场渲染与 `file://` 场景专项排查
+```bash
+node _test/run.mjs          # 全部
+node _test/run.mjs diag     # 只跑某一页
+node _test/run.mjs --list   # 列出测试页
+```
 
+不需要手工起服务、不需要装依赖（只需 Node 18+ 与本机 Chrome/Edge）。
+会自动做语法预检 → 起服务 → 跑测试 → 汇总，结果与截图落在 `_test/_out/`。
+
+| 页面 | 内容 |
+|---|---|
+| `diag2.html` | 数据完整性、邻接连通性、战场生成、兵种/战法全推演、**25 场战斗节奏统计**、存档一致性、双渲染器像素校验 |
+| `ui.html` | 端到端：iframe 驱动真实 `index.html`，开局 → 内政 → 5 弹窗 → 回合(含AI) → 出兵 → 战斗 → 结算 → 存档 |
+| `geo.html` | 地形几何自检（顶点范围 / NaN / 相邻跳变 / 高程采样 / 相机穿模）与多视角截图 |
+| `bt.html` | 战场渲染专项（rAF、帧数、三角形计数、逐帧像素采样） |
+
+细节与"改不同部分该跑什么"见 [`docs/AGENT-GUIDE.md`](docs/AGENT-GUIDE.md#2-怎么验证你的改动最重要的一节)。
 游戏目录本身不含测试代码，`_test/` 可整体删除。
 
 ---

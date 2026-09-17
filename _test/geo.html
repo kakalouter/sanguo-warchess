@@ -26,6 +26,8 @@ window.addEventListener('unhandledrejection',e=>window.__DIAG.errors.push('rej: 
 const L=[];const out=document.getElementById('log');
 const say=s=>{L.push(String(s).replace(/<[^>]+>/g,''));out.textContent=L.join('\n');window.__PARTIAL=L.join('\n');};
 setTimeout(()=>{if(!window.__DIAG.sent)fetch('/result',{method:'POST',body:(window.__PARTIAL||'(空)')+'\n\nWATCHDOG'});},70000);
+// 断言助手：与 diag2/ui 一致的 ✔/✘ 标记，便于 run.mjs 统计
+const ok=s=>say('  ✔ '+s), bad=s=>say('  ✘ '+s), warn=s=>say('  ! '+s);
 (async()=>{
   const S=GameCore.newState('caocao',window.SANGUO_SCENARIO_189);GameCore.S=S;
   GameCore.buildAdjacency();GameCore.initWars();
@@ -33,54 +35,90 @@ setTimeout(()=>{if(!window.__DIAG.sent)fetch('/result',{method:'POST',body:(wind
   const cv=document.getElementById('mapCanvas');
   cv.width=760;cv.height=560;
   await MapView.init(cv,{});
-  say('=== 几何自检 ===');
-  say(JSON.stringify(window.__MAPDBG.geom,null,1));
-  say('heightGrid 高程范围: '+JSON.stringify(window.__MAPDBG.heightRange)+' m (已压缩)');
-  say('HSCALE*EXAG = '+(MapView.HSCALE*MapView.EXAG).toFixed(6)+'  即 8849m -> '+ (8849*MapView.HSCALE*MapView.EXAG).toFixed(1)+' 世界单位');
-  say('顶点抽样: '+JSON.stringify(window.__MAPDBG.vertExample));
+
+  say('▍1 · 地形几何自检');
+  const gm = window.__MAPDBG.geom;
+  say('  ' + JSON.stringify(gm));
+  const expectVerts = SANGUO_MAP.gridW * SANGUO_MAP.gridH;
+  gm.verts === expectVerts ? ok(`顶点数 ${gm.verts} 与 gridW×gridH 一致`) : bad(`顶点数 ${gm.verts} ≠ 期望 ${expectVerts}`);
+  gm.nan === 0 ? ok('无 NaN 顶点') : bad(`有 ${gm.nan} 个 NaN 顶点`);
+  gm.neg === 0 ? ok('无负高度顶点') : bad(`有 ${gm.neg} 个负高度顶点`);
+  (gm.minY >= 0 && gm.minY < 0.5) ? ok(`最低顶点 ${gm.minY}（应贴近 0）`) : warn(`最低顶点 ${gm.minY} 异常`);
+  (gm.maxY > 10 && gm.maxY < 30) ? ok(`最高顶点 ${gm.maxY}（设计目标 ~19，允许 10~30）`) : bad(`最高顶点 ${gm.maxY} 超出预期`);
+  gm.maxJump < 15 ? ok(`相邻顶点最大跳变 ${gm.maxJump} < 15（平滑达标）`) : bad(`相邻顶点最大跳变 ${gm.maxJump} 过大，会出现刀山`);
+  gm.jumpCount < 500 ? ok(`跳变点 ${gm.jumpCount} 个 < 500`) : warn(`跳变点 ${gm.jumpCount} 个偏多`);
+
   say('');
-  say('=== heightGrid 采样校验 ===');
-  const hs=(lon,lat)=>{const fx=(lon-SANGUO_MAP.lonMin)/(SANGUO_MAP.lonMax-SANGUO_MAP.lonMin)*(SANGUO_MAP.gridW-1);
-    const fy=(SANGUO_MAP.latMax-lat)/(SANGUO_MAP.latMax-SANGUO_MAP.latMin)*(SANGUO_MAP.gridH-1);
-    return MapView.terrainHeightAt(lon,lat);};
-  say([['珠峰',86.9,27.99],['拉萨',91.1,29.65],['成都',104.07,30.66],['上海',121.47,31.23],['北京',116.4,39.9],['洛阳',112.45,34.62]]
-    .map(([n,lo,la])=>n+' '+hs(lo,la).toFixed(2)).join('  ')+' (世界单位, 应≈米*0.0075)');
-  say('');
-  say('=== 截图（A/B 对照：贴图 vs 纯色，判断尖刺来自几何还是贴图）===');
+  say('▍2 · 高程采样校验（对照真实海拔）');
+  const hr = window.__MAPDBG.heightRange;
+  (hr[0] === 0 && hr[1] > 5000) ? ok(`heightGrid 范围 ${hr[0]}~${hr[1]} m（已压缩）`) : warn(`heightGrid 范围 ${hr[0]}~${hr[1]} 异常`);
+  const hs=(lon,lat)=>MapView.terrainHeightAt(lon,lat);
+  // 世界单位高度，设计上 珠峰≈19、拉萨≈17、成都≈11、上海≈0、北京≈4.7、洛阳≈4.2
+  const refs=[['珠峰',86.9,27.99,19,14,24],['拉萨',91.1,29.65,17,13,21],['成都',104.07,30.66,11,7,15],
+              ['上海',121.47,31.23,0,0,1.5],['北京',116.4,39.9,4.7,2,8],['洛阳',112.45,34.62,4.2,2,8]];
+  const got = refs.map(([n,lo,la])=>`${n} ${hs(lo,la).toFixed(2)}`);
+  say('  ' + got.join('  ') + '  (世界单位)');
+  let sampBad = 0;
+  for (const [n,lo,la,exp,lo2,hi2] of refs) {
+    const v = hs(lo,la);
+    if (v < lo2 || v > hi2) { bad(`${n} 高程 ${v.toFixed(2)} 超出预期区间 [${lo2}, ${hi2}]`); sampBad++; }
+  }
+  if (!sampBad) ok(`${refs.length} 个地标高程全部落在预期区间`);
+  // 单调性：高原必须显著高于东部平原
+  (hs(91.1,29.65) > hs(104.07,30.66) && hs(104.07,30.66) > hs(121.47,31.23))
+    ? ok('拉萨 > 成都 > 上海，地势西高东低成立') : bad('地势高低关系错误');
+
+  // 逐视角渲染检查（贴图 + 纯色 A/B）
   const terrain = MapView.scene.getObjectByName('terrain');
   const views = [['近景洛阳',112.45,34.62,16],['中原',114,34,60],['全国',112,33,110],['青藏',90,32,70]];
-  for (const [label, lon, lat, d] of views) {
-    MapView.focusOn(lon,lat,d);
-    await new Promise(r=>setTimeout(r,1500));
-    const c=document.createElement('canvas');c.width=380;c.height=280;
-    c.getContext('2d').drawImage(cv,0,0,380,280);
-    await fetch('/shot',{method:'POST',body:c.toDataURL('image/png')});
-    say(`  [贴图] ${label}`);
+  const stat = async (tag) => {
+    const out = [];
+    for (const [label, lon, lat, d] of views) {
+      MapView.focusOn(lon,lat,d);
+      await new Promise(r=>setTimeout(r,1500));
+      const c=document.createElement('canvas');c.width=380;c.height=280;
+      c.getContext('2d').drawImage(cv,0,0,380,280);
+      const dd=c.getContext('2d').getImageData(0,0,380,280).data;
+      let nb=0,sum=0; const set=new Set();
+      for(let i=0;i<dd.length;i+=4){const v=dd[i]+dd[i+1]+dd[i+2];sum+=v;if(v>30)nb++;set.add((dd[i]>>4)+','+(dd[i+1]>>4)+','+(dd[i+2]>>4));}
+      out.push({label, tag, ratio:nb/(380*280), bright:sum/(380*280*3), colors:set.size});
+      await fetch('/shot',{method:'POST',body:c.toDataURL('image/png')});
+    }
+    return out;
+  };
+  say('');
+  say('▍3 · 多视角渲染（贴图）');
+  const texStats = await stat('tex');
+  for (const s of texStats) {
+    const good = s.ratio > 0.8 && s.colors > 20;
+    say(`  ${good?'✔':'✘'} [贴图] ${s.label}  非黑 ${(s.ratio*100).toFixed(1)}%  亮度 ${s.bright.toFixed(1)}  色彩簇 ${s.colors}`);
   }
-  say('--- 切换为纯色材质（无贴图）---');
+  say('');
+  say('▍4 · A/B 对照（纯色材质，排查尖刺来源）');
   const origMat = terrain.material;
   terrain.material = new THREE.MeshStandardMaterial({ color: 0x8a9a6a, roughness: 0.95, vertexColors: false });
-  for (const [label, lon, lat, d] of views) {
-    MapView.focusOn(lon,lat,d);
-    await new Promise(r=>setTimeout(r,1500));
-    const c=document.createElement('canvas');c.width=380;c.height=280;
-    c.getContext('2d').drawImage(cv,0,0,380,280);
-    await fetch('/shot',{method:'POST',body:c.toDataURL('image/png')});
-    say(`  [纯色] ${label}`);
-  }
+  const plainStats = await stat('plain');
   terrain.material = origMat;
-  // 相机诊断
-  const cc = MapView.camera;
+  for (const s of plainStats) {
+    const good = s.ratio > 0.8;
+    say(`  ${good?'✔':'✘'} [纯色] ${s.label}  非黑 ${(s.ratio*100).toFixed(1)}%  色彩簇 ${s.colors}`);
+  }
+  say('  说明：纯色下若仍有尖刺，则问题在几何；若消失，则问题在贴图。本次结果请对照截图人工确认。');
+
+  say('');
+  say('▍5 · 相机穿模检查');
   MapView.focusOn(114,34,60);
   await new Promise(r=>setTimeout(r,1200));
-  say('');
-  say('=== 相机诊断 ===');
-  say(`  camera pos = (${cc.position.x.toFixed(1)}, ${cc.position.y.toFixed(1)}, ${cc.position.z.toFixed(1)})`);
+  const cc = MapView.camera;
   const clon = cc.position.x + (SANGUO_MAP.lonMin+SANGUO_MAP.lonMax)/2;
   const clat = -cc.position.z + (SANGUO_MAP.latMin+SANGUO_MAP.latMax)/2;
-  say(`  相机所在经纬度 = (${clon.toFixed(2)}, ${clat.toFixed(2)})  该处地形高 = ${MapView.terrainHeightAt(clon,clat).toFixed(2)}`);
-  say(`  近裁剪面 near=0.5  地形最高顶点 46.2`);
-  say('errors: '+JSON.stringify(window.__DIAG.errors));
+  const gH = MapView.terrainHeightAt(clon,clat);
+  say(`  相机 pos=(${cc.position.x.toFixed(1)}, ${cc.position.y.toFixed(1)}, ${cc.position.z.toFixed(1)})  所在经纬度 (${clon.toFixed(2)}, ${clat.toFixed(2)})  该处地形高 ${gH.toFixed(2)}`);
+  (cc.position.y > gH) ? ok(`相机高于地形 ${ (cc.position.y-gH).toFixed(2) } 世界单位，不会穿模`) : bad('相机低于地面，会穿进山体');
+
+  say('');
+  const errs = window.__DIAG.errors;
+  errs.length ? errs.forEach(e=>bad(e)) : ok('全程无 JS 错误');
   window.__DIAG.sent=true;
   await fetch('/result',{method:'POST',body:L.join('\n')});
   document.title='DONE';

@@ -367,7 +367,18 @@ await SaveSys.importFile()               // 打开文件选择器
 python -m http.server 8000     # 然后访问 http://localhost:8000/
 ```
 
-### 8.2 重新生成数据
+### 8.2 验证改动（一条命令）
+
+```bash
+node _test/run.mjs             # 全部 4 页，约 3 分钟，101 项断言
+node _test/run.mjs diag        # 只跑某一页
+node _test/run.mjs --list      # 列出测试页
+```
+
+会先做语法预检（用 `vm.Script` 检查所有内联脚本与引用的 js），再起服务、找浏览器、跑完汇总。
+**改代码后请务必跑一遍，并人工看 `_test/_out/shot_*.png`。** 详见 [`AGENT-GUIDE.md` §2](AGENT-GUIDE.md#2-怎么验证你的改动最重要的一节)。
+
+### 8.3 重新生成数据
 
 ```bash
 # 武将名册（改势力归属/成员后运行）
@@ -380,9 +391,9 @@ node _source/manifest.js
 node _source/bake.js
 ```
 
-> 这三个脚本是从开发期的临时脚本整理进 `_source/` 的。若你发现缺失，`js/data_generals.js`、`js/data_portraits.js` 本身结构简单，也可以手改。
+> `_source/` 的脚本需要离线素材（Natural Earth 原始数据、DEM 瓦片缓存），它们在**仓库外的同级目录** `../sanguo-warchess-build/`。脚本找不到会给出提示。详见 [`AGENT-GUIDE.md` §4.4](AGENT-GUIDE.md#44-离线素材在仓库外)。
 
-### 8.3 调试开关
+### 8.4 调试开关
 代码里保留了几处调试钩子，正常运行为空操作：
 
 ```js
@@ -391,7 +402,7 @@ window.__BT = {frames:0, renders:0, glErr:0}   // 在 BattleView.init 前设置�
 window.__sanguoHotkeys = fn    // main.js 注册的全局快捷键处理器
 ```
 
-### 8.4 常见坑（踩过的）
+### 8.5 常见坑（踩过的）
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
@@ -401,7 +412,10 @@ window.__sanguoHotkeys = fn    // main.js 注册的全局快捷键处理器
 | 隐藏 canvas 渲染全黑 | `clientWidth` 为 0 时 `setSize(0,0)` | 0 尺寸兜底 + `ResizeObserver` + 显示后等两帧 |
 | 截图/读像素全黑 | WebGL 缓冲在合成后已清空 | `preserveDrawingBuffer: true` |
 | `Cannot access 'X' before initialization` | `const` 声明的函数在其定义前被调用（TDZ） | 把 `doResize` 这类内部函数提到 `init` 之前 |
+| 整个测试页静默无输出、只能等到超时 | 内联脚本有**重复声明**等同名冲突，整段 IIFE 不执行 | 用 `node _test/run.mjs` 的语法预检，1 秒内定位 |
+| 测试服务所有请求 404 | 用 `path.join(ROOT, p)` 做前缀校验，Windows 上反斜杠/正斜杠不匹配 | 改用 `path.resolve(ROOT, '.' + p)` |
 | 战斗永远打不完 | 伤害低于守方恢复节奏，双方僵持 | 见 [`DESIGN.md` §5](DESIGN.md#5-战斗数值与公式) |
+| Chrome 起不来（沙箱） | mojo `platform_channel` 命名管道被拒，直接 FATAL | 放宽沙箱；给子进程传 stderr 要用**文件描述符而不是管道**（管道会让 Chrome EPERM） |
 
 ---
 

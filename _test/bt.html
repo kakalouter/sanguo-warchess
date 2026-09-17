@@ -30,40 +30,57 @@ const B=(s)=>say('\n=== '+s+' ===');
 setTimeout(()=>{ if(!window.__DIAG.sent) fetch('/result',{method:'POST',body:(window.__PARTIAL||'(空)')+'\n\nWATCHDOG'}); },60000);
 
 (async()=>{
-  B('初始化');
-  // 先测 rAF 是否可用
-  let rafCount=0; const rafTest=new Promise(r=>{ const tick=()=>{rafCount++; if(rafCount<5) requestAnimationFrame(tick); else r(tick);}; requestAnimationFrame(tick);});
-  const to=setTimeout(()=>say('rAF 5 帧超时（1s）'),1000);
-  await rafTest; clearTimeout(to);
-  say('rAF 帧回调正常，5 帧完成，visibilityState='+document.visibilityState+' hidden='+document.hidden);
+  say('▍0 · 环境');
+  say('  visibilityState='+document.visibilityState+' hidden='+document.hidden);
 
   const S=GameCore.newState('caocao',window.SANGUO_SCENARIO_189); GameCore.S=S;
   GameCore.buildAdjacency(); GameCore.initWars();
   await Slice.init(); SANGUO_MAP.sampleBattle=Slice.sample;
-  say('slice ready='+Slice.ready+' size='+JSON.stringify(Slice.size()));
+  const ok=s=>say('  ✔ '+s), bad=s=>say('  ✘ '+s), warn=s=>say('  ! '+s);
+
+  say('▍1 · 前置条件');
+  Slice.ready ? ok(`Slice 就绪 ${Slice.size().W}×${Slice.size().H}`) : bad('Slice 未就绪');
+  // rAF 是整套渲染的前提；headless 下若被节流，后面所有帧数断言都会误报
+  let rafCount=0;
+  await new Promise((r)=>{ const tick=()=>{ if(++rafCount>=5) r(); else requestAnimationFrame(tick); }; requestAnimationFrame(tick);
+    setTimeout(r, 3000); });
+  rafCount>=5 ? ok(`requestAnimationFrame 正常（${rafCount} 帧）`) : bad(`rAF 异常，仅 ${rafCount} 帧`);
 
   const bcv=document.getElementById('battleCanvas');
-  say('canvas clientSize before init = '+bcv.clientWidth+'x'+bcv.clientHeight);
+  // 隐藏的 canvas clientWidth 为 0，会让 renderer 以 0×0 初始化（这是踩过的坑）
+  bcv.classList.remove('hidden');
+  bcv.style.cssText='position:fixed;left:0;top:0;width:900px;height:640px';
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  say(`  battleCanvas 布局尺寸 ${bcv.clientWidth}×${bcv.clientHeight}`);
+  bcv.clientWidth>0 ? ok('画布已具备非零布局尺寸') : bad('画布尺寸为 0，渲染器会失效');
+
+  say('');
+  say('▍2 · 渲染器初始化');
   window.__BT={frames:0,renders:0,glErr:0};
   await BattleView.init(bcv);
-  say('BattleView.init ok  frames='+window.__BT.frames+' renders='+window.__BT.renders+' inited='+window.__BT.inited+' afterFirst='+window.__BT.afterFirstAnimate);
-  say('renderer canvas attr = '+bcv.width+'x'+bcv.height);
+  ok(`BattleView.init 完成，canvas attr ${bcv.width}×${bcv.height}`);
+  (bcv.width>100 && bcv.height>100) ? ok('渲染缓冲尺寸正常') : bad(`渲染缓冲尺寸异常 ${bcv.width}×${bcv.height}`);
 
+  say('');
+  say('▍3 · 战场构建');
   const city=S.cities['luoyang'];
   const field=Battle.buildBattlefield(city.lon,city.lat,'t',{dir:'north',sample:3,road:true});
-  say('field '+field.w+'x'+field.h);
+  const tf={}; field.grid.forEach(t=>tf[t]=(tf[t]||0)+1);
+  say('  地形分布: '+Object.entries(tf).map(([k,v])=>Battle.TERRAIN[k].name+' '+v).join('  '));
+  const passable=field.grid.filter(t=>t!=='water'&&t!=='peak').length/(field.w*field.h);
+  passable>0.5 ? ok(`可通行比例 ${(passable*100).toFixed(0)}%`) : bad(`可通行仅 ${(passable*100).toFixed(0)}%`);
   const gs=GameCore.generalsIn('chenliu').slice(0,3);
-  say('attacker generals: '+gs.map(g=>g.name).join(','));
   const bt=Battle.createBattle({field,city,
     attacker:{faction:'caocao',name:'曹',units:gs.map(g=>({general:g,troopType:'gun',troops:9000,train:60,morale:75}))},
     defender:{faction:'dongzhuo',name:'董',units:[],cityGarrison:{troops:9000,train:60,morale:75,troopType:'gun'}}});
-  say('battle units='+bt.units.length);
+  bt.units.length===4 ? ok(`战斗创建：攻 3 + 守 1 = ${bt.units.length} 支`) : warn(`战斗单位数 ${bt.units.length}（预期 4）`);
 
+  say('');
+  say('▍4 · 逐帧渲染采样');
   const t0=performance.now();
   BattleView.load(bt);
-  say('BattleView.load ok ('+(performance.now()-t0).toFixed(0)+'ms)');
-
-  // 逐帧观察
+  ok(`BattleView.load 完成（${(performance.now()-t0).toFixed(0)}ms）`);
+  let best=null;
   for (const wait of [100,400,900,1800,3000]) {
     await new Promise(r=>setTimeout(r,wait));
     const c=document.createElement('canvas'); c.width=350;c.height=250;
@@ -71,20 +88,45 @@ setTimeout(()=>{ if(!window.__DIAG.sent) fetch('/result',{method:'POST',body:(wi
     const d=x.getImageData(0,0,350,250).data;
     let nb=0,sum=0; const set=new Set();
     for(let i=0;i<d.length;i+=4){const v=d[i]+d[i+1]+d[i+2];sum+=v;if(v>30)nb++;set.add((d[i]>>4)+','+(d[i+1]>>4)+','+(d[i+2]>>4));}
-    say(`  t+${wait}ms canvas=${bcv.width}x${bcv.height} 非黑=${(nb/(350*250)*100).toFixed(1)}% 亮度=${(sum/(350*250*3)).toFixed(1)} 色=${set.size} frames=${window.__BT.frames} renders=${window.__BT.renders} glErr=${window.__BT.glErr} ${JSON.stringify(window.__BT.info||{})}`);
-    if (nb>350*250*0.3) { say('  -> 渲染成功，保存截图'); window.__SHOT=c.toDataURL('image/png'); break; }
+    const ratio=nb/(350*250);
+    say(`  t+${wait}ms 非黑=${(ratio*100).toFixed(1)}% 亮度=${(sum/(350*250*3)).toFixed(1)} 色=${set.size} frames=${window.__BT.frames} renders=${window.__BT.renders} glErr=${window.__BT.glErr} ${JSON.stringify(window.__BT.info||{})}`);
+    if (!best || ratio>best.ratio) best={ratio, colors:set.size, url:c.toDataURL('image/png'), t:wait};
+    if (ratio>0.3) break;
   }
+  window.__SHOT=best && best.url;
+  (best && best.ratio>0.9) ? ok(`战场渲染非黑 ${(best.ratio*100).toFixed(1)}%`) : bad(`战场渲染非黑仅 ${best?(best.ratio*100).toFixed(1):0}%，疑似全黑`);
+  (best && best.colors>20) ? ok(`色彩簇 ${best.colors}，不是纯色块`) : bad(`色彩簇仅 ${best?best.colors:0}，画面可能是纯色`);
+  window.__BT.frames>2 ? ok(`渲染循环运行中（frames=${window.__BT.frames} renders=${window.__BT.renders}）`) : bad(`渲染循环未推进（frames=${window.__BT.frames}）`);
+  window.__BT.glErr===0 ? ok('无 WebGL 错误') : bad(`WebGL 错误码 ${window.__BT.glErr}`);
+  const tris = window.__BT.info ? window.__BT.info.tris : 0;
+  (tris>500 && tris<50000) ? ok(`提交三角形 ${tris}（战场 34×24 网格预期 1500~2500）`) : warn(`提交三角形 ${tris} 偏离预期`);
 
-  // 检查场景内容
+  say('');
+  say('▍5 · 场景构成');
   const sc=BattleView.scene;
-  say('scene children = '+sc.children.length);
-  sc.children.forEach((o,i)=>{ say(`  [${i}] ${o.type} name="${o.name}" visible=${o.visible} children=${o.children?o.children.length:0}`); });
-  const cam=BattleView.cam; say('camera dist='+cam.dist+' phi='+cam.phi+' target='+JSON.stringify(cam.target));
-  const r=BattleView; 
-  say('errors: '+JSON.stringify(window.__DIAG.errors,null,1));
+  const unitLayer=sc.children.filter(o=>o.type==='Group');
+  ok(`场景对象 ${sc.children.length} 个，其中 Group ${unitLayer.length} 个`);
+  sc.children.some(o=>o.type==='Mesh'&&o.geometry&&o.geometry.index&&o.geometry.index.count>1000)
+    ? ok('存在地形网格（索引数 > 1000）') : bad('未找到地形网格');
+  const cam=BattleView.cam;
+  say(`  相机 dist=${cam.dist} phi=${cam.phi} target=(${cam.target.x.toFixed(1)},${cam.target.y.toFixed(1)},${cam.target.z.toFixed(1)})`);
+  (cam.dist>5 && cam.dist<200) ? ok('相机距离合理') : bad(`相机距离异常 ${cam.dist}`);
+
+  say('');
+  say('▍6 · 战法特效');
+  BattleView.spawnFx('fire',10,10); BattleView.spawnFx('slash',12,12); BattleView.spawnFx('impact',14,12); BattleView.spawnFx('banner',12,10);
+  const fxMeshes = () => BattleView.scene.children.reduce((n,o)=>n + (o.children?o.children.length:0), 0);
+  const fxN = fxMeshes();
+  await new Promise(r=>setTimeout(r,300));
+  fxN > 0 ? ok(`四类特效（fire/slash/impact/banner）生成无异常，场景内 mesh ${fxN} 个`) : warn('特效未生成到场景中（可能已到期回收）');
+
+  say('');
+  const errs=window.__DIAG.errors;
+  errs.length ? errs.forEach(e=>bad(e)) : ok('全程无 JS 错误');
   window.__DIAG.sent=true;
   await fetch('/result',{method:'POST',body:L.join('\n')});
   if(window.__SHOT) await fetch('/shot',{method:'POST',body:window.__SHOT});
   document.title='DONE';
 })();
+
 </script></body></html>

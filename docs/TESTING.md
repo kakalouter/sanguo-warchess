@@ -19,18 +19,40 @@
 
 | 文件 | 作用 |
 |---|---|
+| **`run.mjs`** | **一键回归运行器**。语法预检 → 起服务 → 找浏览器 → 逐页跑 → 汇总 → 退出码。见 §2.1 |
 | `ui.html` | **最重要**。用 iframe 加载真实 `index.html`，走完 开局 → 内政 → 5 个弹窗 → 结束回合(含AI) → 出兵 → 进入战斗 → 结算 → 存档 全流程，并对 canvas 截图做像素统计 |
 | `diag2.html` | 纯逻辑 + 引擎：数据完整性、邻接连通性、战场生成、**6 兵种 × 38 战法全推演**、25 场战斗节奏统计、存档往返一致性、两个渲染器的像素校验 |
-| `geo.html` | 地形几何自检：顶点范围/NaN/相邻跳变、取景构图、贴图 vs 纯色 A/B 对照、多视角截图 |
-| `bt.html` | 战场渲染专项（含 rAF/帧数/三角形计数探针） |
+| `geo.html` | 地形几何自检：顶点范围/NaN/相邻跳变、高程采样对照真实海拔、相机穿模、取景构图、贴图 vs 纯色 A/B 对照、多视角截图 |
+| `bt.html` | 战场渲染专项（rAF、帧数、三角形计数、逐帧像素采样、场景构成、特效） |
 | `filetest.html` / `filediag.html` | `file://` 场景排查（结论见 §5） |
+| `_out/` | 运行产物（结果文本、截图、Chrome 日志），已 gitignore |
 
-### 2.1 运行方式
-
-测试页需要 HTTP 服务（`file://` 下跨 iframe 读取受限）：
+### 2.1 运行方式（推荐：一条命令）
 
 ```bash
-# 1) 启动服务（项目根目录）
+node _test/run.mjs              # 全部 4 页，约 3 分钟
+node _test/run.mjs diag         # 只跑指定页（diag / ui / geo / bt）
+node _test/run.mjs --list       # 列出所有测试页
+```
+
+`_test/run.mjs` 会自己完成：语法预检 → 起 HTTP 服务 → 找浏览器 → 逐页跑 → 收集结果与截图 → 汇总 → 给出退出码。
+**不需要手工起服务、不需要装依赖、不需要拼命令行参数。**
+
+它会先做**语法预检**：用 `vm.Script` 把每个页面的内联脚本块与引用的 js 过一遍。
+这一步是必要的——测试页的内联脚本一旦有语法错误（最常见是**同名变量声明两次**），
+整段 IIFE 根本不会执行，页面既不报错也不回传，只能干等到超时。预检 1 秒内就能指出问题。
+
+结果与截图落在 `_test/_out/`：
+- `result_<页名>.txt` —— 该页的完整文本输出
+- `shot_NN_<时间戳>.png` —— 各页保存的 canvas 截图（**必须人工过目**）
+- `chrome_<页名>.log` —— Chrome 的 stderr，排查启动失败用
+
+### 2.2 运行方式（手工，仅当需要单独调试某页时）
+
+需要手工起 HTTP 服务的话（**注意路径必须 resolve 成绝对路径，见 §2.3 的坑**）：
+
+```bash
+# 1) 起服务（项目根目录执行）
 node -e "
 const http=require('http'),fs=require('fs'),path=require('path');
 const ROOT=path.resolve('.'),OUT=path.resolve('../_diag_result.json');
@@ -40,7 +62,7 @@ http.createServer((q,s)=>{
   if(q.method==='POST'&&q.url==='/shot'){let b='';q.on('data',d=>b+=d);q.on('end',()=>{const m=/^data:image\/(\w+);base64,(.*)$/s.exec(b);
     if(m)fs.writeFileSync('D:/test/_shot_'+Date.now()+'.'+m[1],Buffer.from(m[2],'base64'));s.writeHead(200,{'Access-Control-Allow-Origin':'*'});s.end('ok')});return}
   let p=decodeURIComponent(q.url.split('?')[0]); if(p==='/')p='/index.html';
-  const f=path.join(ROOT,p);
+  const f=path.resolve(ROOT,'.'+p);
   if(!f.startsWith(ROOT)||!fs.existsSync(f)||fs.statSync(f).isDirectory()){s.writeHead(404);s.end('404');return}
   s.writeHead(200,{'Content-Type':MIME[path.extname(f).toLowerCase()]||'application/octet-stream'});
   fs.createReadStream(f).pipe(s);
@@ -48,7 +70,7 @@ http.createServer((q,s)=>{
 "
 
 # 2) 用 headless Chrome 打开测试页
-#    注意 --dump-dom 会挂住，用 --screenshot + 后台进程 + 超时更稳
+#    注意 --dump-dom 会挂住不退出，用 --screenshot + 后台进程 + 超时更稳
 chrome --headless=new --no-sandbox --disable-gpu --enable-unsafe-swiftshader \
   --user-data-dir=/tmp/cp --window-size=1600,1000 \
   http://127.0.0.1:18742/_test/ui.html
@@ -56,9 +78,9 @@ chrome --headless=new --no-sandbox --disable-gpu --enable-unsafe-swiftshader \
 # 3) 结果由页面 POST 回 /result，服务写入 _diag_result.json
 ```
 
-### 2.2 测试页的两个必备设计
+### 2.3 测试设施的四个必备设计
 
-**看门狗（watchdog）**：主脚本可能因语法错误完全不执行（此时 `window.onerror` 都收不到），也可能中途卡死。所以 `diag2.html` 顶部先注册：
+**① 看门狗（watchdog）**：主脚本可能因语法错误完全不执行（此时 `window.onerror` 都收不到），也可能中途卡死。所以每个页面顶部都注册：
 
 ```js
 setTimeout(() => window.__postPartial('看门狗 80s 超时'),  80000);
@@ -68,9 +90,11 @@ window.addEventListener('error', e => window.__postPartial('window.onerror: ' + 
 
 配合一个不断累积的 `window.__PARTIAL` 数组（`say()` 每写一行就 push），**任何情况下都能拿到已经跑过的部分结果**。
 
-> 这不是过度设计。开发中至少两次撞上"整页静默无输出"，靠看门狗直接定位到 `Identifier 'rounds' has already been declared` 这类语法错误——否则会误判成"卡在渲染"。
+> 这不是过度设计。开发中至少三次撞上"整页静默无输出"，靠看门狗直接定位到
+> `Identifier 'rounds' has already been declared`、`'rafCount' has already been declared` 这类语法错误——
+> 否则会误判成"卡在渲染"。
 
-**像素校验**：不看截图就无法发现"画布全黑"，所以每个渲染测试都做：
+**② 像素校验**：不看截图就无法发现"画布全黑"，所以每个渲染测试都做：
 
 ```js
 function canvasStats(cv, w, h) {
@@ -83,12 +107,19 @@ function canvasStats(cv, w, h) {
     if (v > 30) nonBlack++;
     colors.add((d[i]>>4)+','+(d[i+1]>>4)+','+(d[i+2]>>4));
   }
-  // 非黑比例判断"有没有画出来"，色彩簇数量判断"是不是纯色块"
   return { ratio: nonBlack/(w*h), bright: sum/(w*h*3), colors: colors.size, url: c.toDataURL() };
 }
 ```
 
 **三个判据**：非黑比例 > 50% 说明画了东西；色彩簇 > 20 说明不是纯色（真的渲染了地形/模型）；再加上人工看截图确认观感。
+
+**③ 结果服务器要把路径规范成绝对路径**：`path.resolve(ROOT, '.' + urlPath)`。
+早期版本用 `path.join(ROOT, urlPath)`，Windows 上 `path.join` 产出反斜杠而 `ROOT` 是正斜杠，
+`startsWith(ROOT)` 恒为 false，**所有请求都 404**，症状是测试页一片空白。
+
+**④ 测试页必须自己下结论**：`geo.html` 与 `bt.html` 早期只 `say()` 打印原始数据、不做断言，
+于是运行器只能报"通过 0 项"——看起来正常，实则什么都没检查。
+现在这四页都有统一的 `✔ / ✘ / !` 标记断言，运行器据此统计与判定退出码。
 
 ---
 

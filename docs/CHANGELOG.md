@@ -84,6 +84,39 @@
 
 ---
 
+## [1.0.1] — 交接加固
+
+首版交付后，针对"下一个 agent 能否独立接手"做了补强。
+
+### 新增
+
+- **`_test/run.mjs` 一键回归运行器**：语法预检 → 起 HTTP 服务 → 自动找 Chrome/Edge → 逐页跑 → 汇总 → 退出码。
+  原先要手工拼一长串命令、还要自己写结果服务器，现在一条 `node _test/run.mjs` 即可。
+- **语法预检**：开浏览器之前用 `vm.Script` 检查所有内联脚本与引用的 js。
+  这类错误的症状是"整页静默无输出、只能等到超时"——开发中在 `diag2.html` 与 `bt.html` 上各踩过一次
+  （`Identifier 'rounds' has already been declared`、`'rafCount' has already been declared`）。
+- **`docs/AGENT-GUIDE.md`**：交接说明。含当前状态、改不同部分该跑哪一页、**必须遵守的硬约束**、
+  本机环境坑（PowerShell TLS / GitHub 代理 / 沙箱与 Chrome）、改数值入口速查表。
+- `geo.html` 与 `bt.html` 补上**明确断言**（原先只打印原始数据不做判定，运行器只能报"通过 0 项"）。
+  两页合计新增 33 项断言。
+
+### 修复
+
+- **头像在非根目录页面下路径解析错误**：`new URL('assets/portraits/', 'http://host/_test/')`
+  会解析成 `/_test/assets/...`。改为用 `document.currentScript.src` 反推资源根（脚本在 `<根>/js/` 下），
+  并保留"应用根目录"回退。真实游戏（页面在根目录）本来正常，但诊断页会误报头像加载失败。
+- 运行器结果统计兼容两种页面风格（`<span class="ok">` 与纯文本 `✔`），并加"必须有实质输出"兜底，
+  避免"页面空白却被判为通过"。
+
+### 文档
+
+- 六篇文档中五篇补充了指向 `AGENT-GUIDE.md` 的交叉引用；`TESTING.md` 重写 §2，
+  记录测试设施的四个必备设计（看门狗 / 像素校验 / 绝对路径 / 页面自断言）及其踩坑经过。
+
+---
+
+---
+
 ## 未纳入本版本的已知事项
 
 见 [`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) 的 C、D、E 三组：音效音乐未做、只测过 Chrome、移动端未适配、战斗动画未做移动补间、AI 不会在非交战状态下主动宣战、`file://` 场景需手工验证四项。

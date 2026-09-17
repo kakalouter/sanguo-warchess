@@ -6,16 +6,34 @@
   const cache = new Map();
   const pending = new Map();
 
-  // 以根目录（pathname 以 / 结尾即为目录基准）解析绝对 URL。
-  // 这样无论页面在 / 还是 /_test/ 下，都指向同一份 assets/portraits/。
+  // 本脚本自身的绝对 URL 在同源下就是资源根的可靠基准：
+  // 脚本位于 <根>/js/portraits.js，因此 <根> = 去掉末尾的 js/<文件名>。
+  // 这样无论页面在 / 还是 /_test/ 下、也无论 file:// 还是 http://，都能指向同一份素材。
+  const SELF = (function () {
+    try {
+      const s = document.currentScript;
+      if (s && s.src) return s.src;
+    } catch (e) { /* ignore */ }
+    return null;
+  })();
+
   let BASE = null;
   function baseURL() {
     if (BASE != null) return BASE;
     const idx = window.PORTRAIT_INDEX;
     const rel = (idx && idx.base) || 'assets/portraits/';
+    // 首选：由脚本自身位置推出资源根
+    if (SELF) {
+      const m = /^(.*)\/js\/[^/]*$/.exec(SELF);
+      if (m) { BASE = m[1] + '/' + rel; return BASE; }
+    }
+    // 回退：以「应用根目录」为基准。
+    // 注意不能直接用 location.pathname —— 诊断页在 /_test/ 下时会被解析成 /_test/assets/...。
+    // 约定：正式入口为 /index.html（根目录），测试页在 /_test/ 下。
     try {
       let dir = location.pathname;
       if (!dir.endsWith('/')) dir = dir.slice(0, dir.lastIndexOf('/') + 1);
+      if (/\/_test\/$/.test(dir)) dir = '/';
       BASE = new URL(rel, location.protocol + '//' + location.host + dir).href;
     } catch (e) {
       BASE = rel;
