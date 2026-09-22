@@ -147,10 +147,6 @@ sanguo-warchess/
 | 武将头像 | [renmu123/koei_san_character_img](https://github.com/renmu123/koei_san_character_img) | 见下 |
 | 配色方案参考 | [hopechen067/china-antique-maplibre](https://github.com/hopechen067/china-antique-maplibre) | MIT |
 
-### ⚠️ 重要许可提示
-**武将头像与属性数据版权归 光荣特库摩（Koei Tecmo）所有**，来自《三国志》9/10/11/12 游戏素材。
-**仅可用于本地学习、研究、个人非商业用途，不得再分发或商用。**
-若你要公开发布本项目，请删除 `assets/portraits/`（游戏会自动回退到 `js/portrait.js` 的程序化头像生成），并替换武将数值。
 
 ---
 
